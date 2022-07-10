@@ -2,6 +2,7 @@ package cdc.toy.noticer.entity;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class SmsBody {
 
@@ -17,9 +18,9 @@ public class SmsBody {
 		this.messages = new ArrayList<>();
 	}
 
-	public SmsBody(String content, String to) {
+	public SmsBody(String content, List<String> targets) {
 		this(content);
-		this.messages.add(new Message(to));
+		this.messages.addAll(targets.stream().map(Message::new).collect(Collectors.toList()));
 	}
 
 	public void to(String phoneNumber) {

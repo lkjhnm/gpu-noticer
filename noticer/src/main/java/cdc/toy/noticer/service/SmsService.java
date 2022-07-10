@@ -1,26 +1,29 @@
 package cdc.toy.noticer.service;
 
 import cdc.toy.noticer.entity.SmsBody;
+import cdc.toy.noticer.entity.SmsRequestEntity;
 import cdc.toy.noticer.entity.SmsResponse;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Base64Utils;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
+import javax.annotation.PostConstruct;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Files;
 import java.util.Date;
+import java.util.List;
 
 @Service
 public class SmsService {
-
-	public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
 	private final String ACCESS_KEY = "f4uamT8jfeh53F9kDGJZ";
 
@@ -31,30 +34,49 @@ public class SmsService {
 
 	@Value("${ncp.sms.service.id}")
 	private String serviceId;
+	private URI smsUri;
+
+	@PostConstruct
+	private void init() throws URISyntaxException {
+		smsUri = new URI(String.format(api, serviceId));
+	}
 
 	public Mono<SmsResponse> sendMessage(String contents) {
 		try {
 			String timestamp = String.valueOf(new Date().getTime());
-			URI uri = new URI(String.format(api, serviceId));
-			String body = OBJECT_MAPPER.writeValueAsString(new SmsBody(contents, "01090238852"));
-			String signature = makeSignature(uri.getPath(), "POST", timestamp, ACCESS_KEY);
-			return buildClient(timestamp, uri, signature, body)
-					.exchangeToMono(response -> response.bodyToMono(SmsResponse.class));
+			String signature = makeSignature(smsUri.getPath(), "POST", timestamp, ACCESS_KEY);
+			return buildRequestEntity(smsUri, timestamp, signature, contents)
+					.map(this::buildClient)
+					.flatMap(v -> v.exchangeToMono(response -> response.bodyToMono(SmsResponse.class)));
 		} catch (Throwable t) {
 			return Mono.error(t);
 		}
 	}
 
-	private WebClient.RequestHeadersSpec<?> buildClient(String timestamp, URI uri, String signature, String body) {
+	private Mono<SmsRequestEntity> buildRequestEntity
+			(URI uri,
+			 String timestamp,
+			 String signature,
+			 String contents) {
+		return Mono.fromCallable(() ->
+				new SmsRequestEntity(uri, timestamp, signature, new SmsBody(contents, getPhoneNumbers())
+				)).subscribeOn(Schedulers.boundedElastic());
+	}
+
+	private List<String> getPhoneNumbers() throws IOException {
+		return Files.readAllLines(new ClassPathResource("/SMS_PHONE_BOOK").getFile().toPath());
+	}
+
+	private WebClient.RequestHeadersSpec<?> buildClient(SmsRequestEntity requestEntity) {
 		return WebClient.create()
 		                .post()
-		                .uri(uri)
+		                .uri(requestEntity.getUri())
 		                .contentType(MediaType.APPLICATION_JSON)
 		                .accept(MediaType.APPLICATION_JSON)
-		                .header("x-ncp-apigw-timestamp", timestamp)
+		                .header("x-ncp-apigw-timestamp", requestEntity.getTimestamp())
 		                .header("x-ncp-iam-access-key", ACCESS_KEY)
-		                .header("x-ncp-apigw-signature-v2", signature)
-		                .bodyValue(body);
+		                .header("x-ncp-apigw-signature-v2", requestEntity.getSignature())
+		                .bodyValue(requestEntity.getBody());
 	}
 
 	public String makeSignature(String uri, String method, String timestamp, String accessKey)
